@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Document</title>
+</head>
+<body>
+  <div class="window">
+    <div class="history-list"></div>
+    <div class="message-send">
+      <input type="text">
+      <button>send</button>
+    </div>
+  </div>
+  <div class="peer-list">
+    <button>refresh</button>
+    <div class="peers"></div>
+  </div>
+  <script>
+    /* async function onIceCandidate(pc, event) {
+      try {
+        const ice = JSON.parse(JSON.stringify(event.candidate.toJSON()))
+        pc.addIceCandidate(ice)
+      } catch {}
+    }
+
+    const pc1 = new RTCPeerConnection()
+    const pc2 = new RTCPeerConnection()
+    pc2.addEventListener('track', e => {
+
+    })
+    pc1.addEventListener('icecandidate', e => {
+
+    })
+    try {
+      const offerOptions = {
+        offerToReceiveAudio: 1,
+        offerToReceiveVideo: 1
+      }
+      const desc_pc1 = await pc1.createOffer(offerOptions)
+      await pc1.setLocalDescription(desc_pc1)
+
+      const test_desc1 = {
+        type: 'offer',
+        sdp: desc_pc1.sdp
+      }
+      await pc2.setRemoteDescription(test_desc1)
+      const desc_pc2 = await pc2.createAnswer()
+      const test_desc2 = {
+        type: 'answer',
+        sdp: desc_pc2.sdp
+      }
+      await pc2.setLocalDescription(test_desc2)
+
+      await pc1.setRemoteDescription(test_desc2)
+    } catch {
+
+    } */
+
+    const ramStr = (n = 5) => Array(n).fill(1).map(() => ((Math.random() * 36) | 0).toString(36)).join('')
+
+    const socket = new WebSocket('ws://localhost:3000')
+    const wsPromisePool = {}
+    const wsEventPool = {}
+    socket.addEventListener('message', evt => {
+      try {
+        const data = JSON.parse(evt.data)
+        switch(data.type) {
+          case 'callback':
+            if (wsPromisePool[data.hash]) {
+              wsPromisePool[data.hash](data.data)
+            }
+            break
+          default:
+            if (wsEventPool[data.type]) {
+              wsEventPool[data.type].forEach(fn => {
+                const res = fn(data)
+                if (data.callbackHash) {
+                  if (res instanceof Promise) {
+                    res.then(e => wsSend('callback', e, data.callbackHash))
+                  } else {
+                    wsSend('callback', res, data.callbackHash)
+                  }
+                }
+              })
+            }
+            break
+        }
+      }catch{}
+    })
+
+    const wsOn = (eventName, callback, replace = false) => {
+      if (!wsEventPool[eventName]) {
+        wsEventPool[eventName] = []
+      }
+      const arr = wsEventPool[eventName]
+      if (replace) {
+        arr[(arr.length || 1) - 1] = callback
+      } else {
+        arr.push(callback)
+      }
+    }
+
+    const wsSend = (type, data, hash) => {
+      return new Promise(resolve => {
+        const hashKey = hash || ramStr()
+        socket.send(JSON.stringify({
+          hash: hashKey,
+          type,
+          data
+        }))
+        if (!hash) {
+          wsPromisePool[hashKey] = res => {
+            resolve(res)
+            Reflect.deleteProperty(wsPromisePool, hashKey)
+          }
+        }
+      })
+    }
+
+    //login
+    const localData = {
+      name: '',
+      currentConnectName: ''
+    }
+    const login = (name) => {
+      wsSend('login', name).then(res => {
+        localData.name = name
+      })
+    }
+
+    //getLiveList
+
+    const getLiveList = async () => {
+     return wsSend('getLiveList')
+    }
+
+    //call
+    const localConnection = new RTCPeerConnection()
+    let sendChannel
+    let receiveChannel
+
+    const call = async (name) => {
+      sendChannel = localConnection.createDataChannel('sendChannel')
+      sendChannel.onmessage = handleReceiveMessage
+      sendChannel.onopen = handleSendChannelStatusChange
+      sendChannel.onclose = handleSendChannelStatusChange
+      const offer = await localConnection.createOffer()
+      await localConnection.setLocalDescription(offer)
+      const remoteAnswer = await wsSend('sendDSP', {
+        requestName: localData.name,
+        receiveName: name,
+        dsp: localConnection.localDescription.sdp
+      })
+      await localConnection.setRemoteDescription({type: "answer", sdp: remoteAnswer})
+      localData.currentConnectName = name
+      return 'call success'
+    }
+
+    localConnection.ondatachannel = receiveChannelCallback
+
+    localConnection.onicecandidate = e => {
+      if (e.candidate) {
+        wsSend('sendICE', {
+          requestName: localData.name,
+          receiveName: localData.currentConnectName,
+          ice: e.candidate
+        })
+      }
+    }
+
+    wsOn('remoteDSP', async res => {
+      localData.currentConnectName = res.data.requestName
+      await localConnection.setRemoteDescription({type:"offer", sdp: res.data.dsp})
+      const answer = await localConnection.createAnswer()
+      await localConnection.setLocalDescription(answer)
+      return localConnection.localDescription.sdp
+    }, true)
+
+    wsOn('remoteICE', async res => {
+      localConnection.addIceCandidate(res.data.ice).catch(handleAddCandidateError)
+    }, true)
+
+    function handleSendChannelStatusChange(event) {
+      const state = sendChannel.readyState
+      console.log(132, state)
+    }
+
+    function handleReceiveChannelStatusChange(event) {
+      const state = receiveChannel.readyState
+      console.log(137, state)
+    }
+
+    function receiveChannelCallback(event) {
+      console.log(188, event)
+      receiveChannel = event.channel
+      receiveChannel.onmessage = handleReceiveMessage
+      receiveChannel.onopen = handleReceiveChannelStatusChange
+      receiveChannel.onclose = handleReceiveChannelStatusChange
+    }
+
+    function handleReceiveMessage(event) {
+      console.log(148, event)
+    }
+
+    function handleAddCandidateError(event) {
+      console.log(152, event)
+    }
+  </script>
+</body>
+</html>
